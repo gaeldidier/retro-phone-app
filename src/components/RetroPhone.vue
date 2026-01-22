@@ -1,147 +1,159 @@
 <template>
-  <div class="phone-container">
-    <div class="display">{{ dialedNumber }}</div>
+  <div class="phone">
+    <div class="screen">{{ dialed }}</div>
 
-    <div class="buttons">
-      <button v-for="n in numbers" :key="n" @click="pressNumber(n)">{{ n }}</button>
-      <button @click="deleteNumber">DEL</button>
+    <div class="keys">
+      <button v-for="n in numbers" :key="n" @click="press(n)">
+        {{ n }}
+      </button>
+      <button class="del" @click="del">DEL</button>
     </div>
 
-    <div class="controls">
-      <button @click="pickUp" :disabled="connected">Pick Up</button>
-      <button @click="call" :disabled="!pickedUp || connected">Call</button>
-      <button @click="hangUp" :disabled="!connected && !pickedUp">Hang Up</button>
+    <div class="actions">
+      <button @click="pickup" :disabled="picked">Pick Up</button>
+      <button @click="call" :disabled="!picked || connected">Call</button>
+      <button @click="hangup" :disabled="!picked">Hang Up</button>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref } from 'vue'
-import { Howl } from 'howler'
+import { ref } from "vue"
 
-const numbers = ['1','2','3','4','5','6','7','8','9','0']
-const dialedNumber = ref('')
-const pickedUp = ref(false)
+const numbers = ["1","2","3","4","5","6","7","8","9","0"]
+
+const dialed = ref("")
+const picked = ref(false)
 const connected = ref(false)
 
 let localStream = null
-let peerConnection = null
+let pc = null
+let socket = null
 
-// Sounds
-const pickupSound = new Howl({ src: ['/assets/sounds/pickup.mp3'] })
-const dialSound = new Howl({ src: ['/assets/sounds/dial.mp3'] })
-const hangupSound = new Howl({ src: ['/assets/sounds/hangup.mp3'] })
-const deleteSound = new Howl({ src: ['/assets/sounds/delete.mp3'] }) // optional
+// 🔴 CHANGE THIS TO YOUR SERVER COMPUTER IP
+const SIGNALING_SERVER = "ws://192.168.1.5:3000"
 
-// Handle number press
-function pressNumber(n) {
-  dialedNumber.value += n
-  dialSound.play()
+function press(n) {
+  dialed.value += n
 }
 
-// Delete last digit
-function deleteNumber() {
-  if (dialedNumber.value.length > 0) {
-    dialedNumber.value = dialedNumber.value.slice(0, -1)
-    deleteSound.play()
-  }
+function del() {
+  dialed.value = dialed.value.slice(0, -1)
 }
 
-// Pick up handset
-async function pickUp() {
-  pickedUp.value = true
-  pickupSound.play()
-
-  // Get microphone
+async function pickup() {
+  picked.value = true
   localStream = await navigator.mediaDevices.getUserMedia({ audio: true })
 }
 
-// Hang up
-function hangUp() {
-  hangupSound.play()
-  dialedNumber.value = ''
-  pickedUp.value = false
-  connected.value = false
+function hangup() {
+  if (pc) pc.close()
+  if (socket) socket.close()
 
-  if (peerConnection) {
-    peerConnection.close()
-    peerConnection = null
-  }
+  pc = null
+  socket = null
+  dialed.value = ""
+  picked.value = false
+  connected.value = false
 }
 
-// Start call
 async function call() {
-  if (!pickedUp.value) return alert('Pick up first!')
-
+  pc = new RTCPeerConnection()
   connected.value = true
-  alert('Connecting to your friend on LAN...')
 
-  // Create simple peer connection
-  peerConnection = new RTCPeerConnection()
+  localStream.getTracks().forEach(track => {
+    pc.addTrack(track, localStream)
+  })
 
-  // Add local audio
-  localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream))
+  const audio = document.createElement("audio")
+  audio.autoplay = true
 
-  // Remote audio element
-  const audioEl = document.createElement('audio')
-  audioEl.autoplay = true
-  peerConnection.ontrack = (event) => {
-    audioEl.srcObject = event.streams[0]
+  pc.ontrack = e => {
+    audio.srcObject = e.streams[0]
   }
-  document.body.appendChild(audioEl)
 
-  // **IMPORTANT**: For real LAN calls, signaling is needed
-  alert('This is a prototype: actual LAN connection requires signaling')
+  pc.onicecandidate = e => {
+    if (e.candidate) {
+      socket.send(JSON.stringify({ type: "ice", candidate: e.candidate }))
+    }
+  }
+
+  socket = new WebSocket(SIGNALING_SERVER)
+
+  socket.onmessage = async (msg) => {
+    const data = JSON.parse(msg.data)
+
+    if (data.type === "offer") {
+      await pc.setRemoteDescription(data.offer)
+      const answer = await pc.createAnswer()
+      await pc.setLocalDescription(answer)
+      socket.send(JSON.stringify({ type: "answer", answer }))
+    }
+
+    if (data.type === "answer") {
+      await pc.setRemoteDescription(data.answer)
+    }
+
+    if (data.type === "ice") {
+      await pc.addIceCandidate(data.candidate)
+    }
+  }
+
+  const offer = await pc.createOffer()
+  await pc.setLocalDescription(offer)
+
+  socket.onopen = () => {
+    socket.send(JSON.stringify({ type: "offer", offer }))
+  }
 }
 </script>
 
 <style scoped>
-.phone-container {
-  width: 400px;
-  margin: 50px auto;
-  border: 3px solid #333;
-  border-radius: 15px;
+.phone {
+  width: 360px;
+  margin: 40px auto;
   padding: 20px;
   background: #222;
   color: #0f0;
-  text-align: center;
+  border-radius: 20px;
   font-family: monospace;
 }
 
-.display {
-  width: 90%;
-  margin: 0 auto 20px auto;
+.screen {
   height: 50px;
-  border: 2px inset #0f0;
+  background: black;
+  border: 2px solid #0f0;
+  margin-bottom: 20px;
   font-size: 24px;
+  text-align: center;
   line-height: 50px;
-  background: #000;
 }
 
-.buttons {
+.keys {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 10px;
-  margin-bottom: 20px;
 }
 
-.buttons button, .controls button {
-  padding: 15px;
+.keys button,
+.actions button {
+  padding: 14px;
   font-size: 18px;
-  background: #555;
+  background: #444;
   color: #0f0;
   border: 2px solid #0f0;
   border-radius: 8px;
   cursor: pointer;
 }
 
-.buttons button:hover, .controls button:hover {
-  background: #0f0;
-  color: #000;
+.del {
+  grid-column: span 3;
+  background: darkred;
 }
 
-.controls {
+.actions {
+  margin-top: 20px;
   display: flex;
-  justify-content: space-around;
+  justify-content: space-between;
 }
 </style>
